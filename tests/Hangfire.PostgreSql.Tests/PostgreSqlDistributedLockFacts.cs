@@ -1,10 +1,6 @@
 ﻿using System;
 using System.Data;
-using System.Globalization;
-using System.Linq;
-using System.Runtime.Serialization;
 using System.Threading;
-using Dapper;
 using Moq;
 using Npgsql;
 using Xunit;
@@ -13,12 +9,12 @@ namespace Hangfire.PostgreSql.Tests
 {
     public class PostgreSqlDistributedLockFacts
     {
-        private readonly TimeSpan _timeout = TimeSpan.FromSeconds(5);
+        private readonly TimeSpan _timeout = TimeSpan.FromMilliseconds(250);
 
         [Fact]
         public void Ctor_ThrowsAnException_WhenResourceIsNullOrEmpty()
         {
-            PostgreSqlStorageOptions options = new PostgreSqlStorageOptions();
+            var options = new PostgreSqlStorageOptions();
 
             var exception = Assert.Throws<ArgumentNullException>(
                 () => new PostgreSqlDistributedLock("", _timeout, new Mock<IDbConnection>().Object, options));
@@ -29,7 +25,7 @@ namespace Hangfire.PostgreSql.Tests
         [Fact]
         public void Ctor_ThrowsAnException_WhenConnectionIsNull()
         {
-            PostgreSqlStorageOptions options = new PostgreSqlStorageOptions();
+            var options = new PostgreSqlStorageOptions();
 
             var exception = Assert.Throws<ArgumentNullException>(
                 () => new PostgreSqlDistributedLock("hello", _timeout, null, options));
@@ -46,196 +42,112 @@ namespace Hangfire.PostgreSql.Tests
             Assert.Equal("options", exception.ParamName);
         }
 
-
-        [Fact, CleanDatabase]
-        public void Ctor_AcquiresExclusiveApplicationLock_WithUseNativeDatabaseTransactions_OnSession()
+        [Fact]
+        public void Ctor_ThrowsAnException_WhenConnectionIsClosed()
         {
-            PostgreSqlStorageOptions options = new PostgreSqlStorageOptions()
-            {
-                SchemaName = GetSchemaName(),
-                UseNativeDatabaseTransactions = true
-            };
+            var options = new PostgreSqlStorageOptions();
+            var connection = new Mock<IDbConnection>();
+            connection.SetupGet(x => x.State).Returns(ConnectionState.Closed);
 
-            UseConnection(connection =>
-            {
-                // ReSharper disable once UnusedVariable
-                var distributedLock = new PostgreSqlDistributedLock("hello", _timeout, connection, options);
-
-                var lockCount = connection.Query<long>(
-                    @"select count(*) from """ + GetSchemaName() + @""".""lock"" where ""resource"" = @resource",
-                    new { resource = "hello" }).Single();
-
-                Assert.Equal(1, lockCount);
-                //Assert.Equal("Exclusive", lockMode);
-            });
+            Assert.Throws<InvalidOperationException>(
+                () => new PostgreSqlDistributedLock("hi", _timeout, connection.Object, options));
         }
 
-        [Fact, CleanDatabase]
-        public void Ctor_AcquiresExclusiveApplicationLock_WithUseNativeDatabaseTransactions_OnSession_WhenDeadlockIsOccured()
+        [Theory, InlineData(true), InlineData(false)]
+        [CleanDatabase]
+        public void Ctor_AcquiresExclusiveApplicationLock_OnSession(bool useNativeDatabaseTransactions)
         {
-            PostgreSqlStorageOptions options = new PostgreSqlStorageOptions()
+            var options = new PostgreSqlStorageOptions
             {
                 SchemaName = GetSchemaName(),
-                UseNativeDatabaseTransactions = true,
-                DistributedLockTimeout = TimeSpan.FromSeconds(10)
-            };
-            
-            UseConnection(connection =>
-            {
-                // Arrange
-                var timeout = TimeSpan.FromSeconds(15);
-                var resourceName = "hello";
-                var dateTimeNow = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fffffff", CultureInfo.InvariantCulture);
-                connection.Execute($@"INSERT INTO ""{GetSchemaName()}"".""lock"" VALUES ('{resourceName}', 0, '{dateTimeNow}')");
-
-                // Act
-                var distributedLock = new PostgreSqlDistributedLock(resourceName, timeout, connection, options);
-
-                // Assert
-                Assert.True(distributedLock != null);
-            });
-        }
-
-        [Fact, CleanDatabase]
-        public void Ctor_AcquiresExclusiveApplicationLock_WithoutUseNativeDatabaseTransactions_OnSession()
-        {
-            PostgreSqlStorageOptions options = new PostgreSqlStorageOptions()
-            {
-                SchemaName = GetSchemaName(),
-                UseNativeDatabaseTransactions = false
+                UseNativeDatabaseTransactions = useNativeDatabaseTransactions
             };
 
-            UseConnection(connection =>
+            UseConnection(connection1 =>
             {
-                // ReSharper disable UnusedVariable
-
-                // Acquire locks on two different resources to make sure they don't conflict.
-                var distributedLock = new PostgreSqlDistributedLock("hello", _timeout, connection, options);
-                var distributedLock2 = new PostgreSqlDistributedLock("hello2", _timeout, connection, options);
-
-                // ReSharper restore UnusedVariable
-
-                var lockCount = connection.Query<long>(
-                    @"select count(*) from """ + GetSchemaName() + @""".""lock"" where ""resource"" = @resource",
-                    new { resource = "hello" }).Single();
-
-                Assert.Equal(1, lockCount);
-                //Assert.Equal("Exclusive", lockMode);
-            });
-        }
-
-
-        [Fact, CleanDatabase]
-        public void Ctor_ThrowsAnException_IfLockCanNotBeGranted_WithUseNativeDatabaseTransactions()
-        {
-            PostgreSqlStorageOptions options = new PostgreSqlStorageOptions()
-            {
-                SchemaName = GetSchemaName(),
-                UseNativeDatabaseTransactions = true
-            };
-
-            var releaseLock = new ManualResetEventSlim(false);
-            var lockAcquired = new ManualResetEventSlim(false);
-
-            var thread = new Thread(
-                () => UseConnection(connection1 =>
+                using (new PostgreSqlDistributedLock("exclusive", TimeSpan.FromSeconds(1), connection1, options))
                 {
-                    using (new PostgreSqlDistributedLock("exclusive", _timeout, connection1, options))
-                    {
-                        lockAcquired.Set();
-                        releaseLock.Wait();
-                    }
-                }));
-            thread.Start();
-
-            lockAcquired.Wait();
-
-            UseConnection(connection2 =>
-                Assert.Throws<PostgreSqlDistributedLockException>(
-                    () => new PostgreSqlDistributedLock("exclusive", _timeout, connection2, options)));
-
-            releaseLock.Set();
-            thread.Join();
+                    UseConnection(connection2 =>
+                        Assert.Throws<PostgreSqlDistributedLockException>(
+                            () => new PostgreSqlDistributedLock("exclusive", _timeout, connection2, options)));
+                }
+            });
         }
 
-        [Fact, CleanDatabase]
-        public void Ctor_ThrowsAnException_IfLockCanNotBeGranted_WithoutUseNativeDatabaseTransactions()
+        [Theory, InlineData(true), InlineData(false)]
+        [CleanDatabase]
+        public void Ctor_DoesNotExpireActiveLock_WhenDistributedLockTimeoutElapses(bool useNativeDatabaseTransactions)
         {
-            PostgreSqlStorageOptions options = new PostgreSqlStorageOptions()
+            var options = new PostgreSqlStorageOptions
             {
                 SchemaName = GetSchemaName(),
-                UseNativeDatabaseTransactions = false
+                DistributedLockTimeout = TimeSpan.FromMilliseconds(1),
+                UseNativeDatabaseTransactions = useNativeDatabaseTransactions
             };
 
-            var releaseLock = new ManualResetEventSlim(false);
-            var lockAcquired = new ManualResetEventSlim(false);
-
-            var thread = new Thread(
-                () => UseConnection(connection1 =>
+            UseConnection(connection1 =>
+            {
+                using (new PostgreSqlDistributedLock("exclusive", TimeSpan.FromSeconds(1), connection1, options))
                 {
-                    using (new PostgreSqlDistributedLock("exclusive", _timeout, connection1, options))
-                    {
-                        lockAcquired.Set();
-                        releaseLock.Wait();
-                    }
-                }));
-            thread.Start();
+                    Thread.Sleep(100);
 
-            lockAcquired.Wait();
-
-            UseConnection(connection2 =>
-                Assert.Throws<PostgreSqlDistributedLockException>(
-                    () => new PostgreSqlDistributedLock("exclusive", _timeout, connection2, options)));
-
-            releaseLock.Set();
-            thread.Join();
+                    UseConnection(connection2 =>
+                        Assert.Throws<PostgreSqlDistributedLockException>(
+                            () => new PostgreSqlDistributedLock("exclusive", _timeout, connection2, options)));
+                }
+            });
         }
 
-
-        [Fact, CleanDatabase]
-        public void Dispose_ReleasesExclusiveApplicationLock_WithUseNativeDatabaseTransactions()
+        [Theory, InlineData(true), InlineData(false)]
+        [CleanDatabase]
+        public void Dispose_ReleasesExclusiveApplicationLock(bool useNativeDatabaseTransactions)
         {
-            PostgreSqlStorageOptions options = new PostgreSqlStorageOptions()
+            var options = new PostgreSqlStorageOptions
             {
                 SchemaName = GetSchemaName(),
-                UseNativeDatabaseTransactions = true
+                UseNativeDatabaseTransactions = useNativeDatabaseTransactions
             };
 
-            UseConnection(connection =>
+            UseConnection(connection1 =>
             {
-                var distributedLock = new PostgreSqlDistributedLock("hello", _timeout, connection, options);
+                var distributedLock = new PostgreSqlDistributedLock("hello", TimeSpan.FromSeconds(1), connection1, options);
                 distributedLock.Dispose();
 
-                var lockCount = connection.Query<long>(
-                    @"select count(*) from """ + GetSchemaName() + @""".""lock"" where ""resource"" = @resource",
-                    new { resource = "hello" }).Single();
-
-                Assert.Equal(0, lockCount);
+                UseConnection(connection2 =>
+                {
+                    using (var anotherLock = new PostgreSqlDistributedLock("hello", TimeSpan.FromSeconds(1), connection2, options))
+                    {
+                        Assert.NotNull(anotherLock);
+                    }
+                });
             });
         }
 
-        [Fact, CleanDatabase]
-        public void Dispose_ReleasesExclusiveApplicationLock_WithoutUseNativeDatabaseTransactions()
+        [Theory, InlineData(true), InlineData(false)]
+        [CleanDatabase]
+        public void ClosingConnection_ReleasesExclusiveApplicationLock(bool useNativeDatabaseTransactions)
         {
-            PostgreSqlStorageOptions options = new PostgreSqlStorageOptions()
+            var options = new PostgreSqlStorageOptions
             {
                 SchemaName = GetSchemaName(),
-                UseNativeDatabaseTransactions = false
+                UseNativeDatabaseTransactions = useNativeDatabaseTransactions
             };
 
-            UseConnection(connection =>
+            var connection1 = ConnectionUtils.CreateConnection();
+            var distributedLock = new PostgreSqlDistributedLock("hello", TimeSpan.FromSeconds(1), connection1, options);
+
+            connection1.Dispose();
+
+            UseConnection(connection2 =>
             {
-                var distributedLock = new PostgreSqlDistributedLock("hello", _timeout, connection, options);
-                distributedLock.Dispose();
-
-                var lockCount = connection.Query<long>(
-                    @"select count(*) from """ + GetSchemaName() + @""".""lock"" where ""resource"" = @resource",
-                    new { resource = "hello" }).Single();
-
-                Assert.Equal(0, lockCount);
+                using (var anotherLock = new PostgreSqlDistributedLock("hello", TimeSpan.FromSeconds(1), connection2, options))
+                {
+                    Assert.NotNull(anotherLock);
+                }
             });
-        }
 
+            GC.KeepAlive(distributedLock);
+        }
 
         private void UseConnection(Action<NpgsqlConnection> action)
         {

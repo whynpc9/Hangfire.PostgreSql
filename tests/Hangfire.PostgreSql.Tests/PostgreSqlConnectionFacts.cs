@@ -142,6 +142,72 @@ namespace Hangfire.PostgreSql.Tests
 		}
 
 		[Fact, CleanDatabase]
+		public void AcquireLock_IsReentrantWithinSameStorageConnection()
+		{
+			UseConnection(connection =>
+			{
+				var firstLock = connection.AcquireDistributedLock("shared-resource", TimeSpan.FromSeconds(1));
+				var secondLock = connection.AcquireDistributedLock("shared-resource", TimeSpan.FromSeconds(1));
+
+				using (var competingConnection = ConnectionUtils.CreateConnection())
+				{
+					Assert.Throws<PostgreSqlDistributedLockException>(
+						() => new PostgreSqlDistributedLock(
+							$"{_options.SchemaName}:HangFire:shared-resource",
+							TimeSpan.FromMilliseconds(250),
+							competingConnection,
+							_options));
+				}
+
+				firstLock.Dispose();
+
+				using (var competingConnection = ConnectionUtils.CreateConnection())
+				{
+					Assert.Throws<PostgreSqlDistributedLockException>(
+						() => new PostgreSqlDistributedLock(
+							$"{_options.SchemaName}:HangFire:shared-resource",
+							TimeSpan.FromMilliseconds(250),
+							competingConnection,
+							_options));
+				}
+
+				secondLock.Dispose();
+
+				using (var competingConnection = ConnectionUtils.CreateConnection())
+				using (var competingLock = new PostgreSqlDistributedLock(
+					$"{_options.SchemaName}:HangFire:shared-resource",
+					TimeSpan.FromSeconds(1),
+					competingConnection,
+					_options))
+				{
+					Assert.NotNull(competingLock);
+				}
+			});
+		}
+
+		[Fact, CleanDatabase]
+		public void Dispose_ReleasesDedicatedLockConnection()
+		{
+			var sqlConnection = ConnectionUtils.CreateConnection();
+			var connection = new PostgreSqlConnection(sqlConnection, _providers, _options);
+			var distributedLock = connection.AcquireDistributedLock("shutdown-resource", TimeSpan.FromSeconds(1));
+
+			connection.Dispose();
+
+			using (var competingConnection = ConnectionUtils.CreateConnection())
+			using (var competingLock = new PostgreSqlDistributedLock(
+				$"{_options.SchemaName}:HangFire:shutdown-resource",
+				TimeSpan.FromSeconds(1),
+				competingConnection,
+				_options))
+			{
+				Assert.NotNull(competingLock);
+			}
+
+			GC.KeepAlive(distributedLock);
+		}
+
+		[Fact, CleanDatabase]
 		public void CreateExpiredJob_ThrowsAnException_WhenJobIsNull()
 		{
 			UseConnection(connection =>

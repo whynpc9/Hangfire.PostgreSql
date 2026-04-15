@@ -41,6 +41,9 @@ namespace Hangfire.PostgreSql
 		private readonly NpgsqlConnection _connection;
 		private readonly PersistentJobQueueProviderCollection _queueProviders;
 		private readonly PostgreSqlStorageOptions _options;
+		private readonly Dictionary<string, HashSet<Guid>> _lockedResources;
+		private readonly object _lockSyncRoot = new object();
+		private NpgsqlConnection _lockConnection;
 
 		public PostgreSqlConnection(
 			NpgsqlConnection connection,
@@ -59,6 +62,7 @@ namespace Hangfire.PostgreSql
 			_connection = connection ?? throw new ArgumentNullException(nameof(connection));
 			_queueProviders = queueProviders ?? throw new ArgumentNullException(nameof(queueProviders));
 			_options = options ?? throw new ArgumentNullException(nameof(options));
+			_lockedResources = new Dictionary<string, HashSet<Guid>>();
 			OwnsConnection = ownsConnection;
 		}
 
@@ -68,6 +72,14 @@ namespace Hangfire.PostgreSql
 		public override void Dispose()
 		{
             base.Dispose();
+
+			lock (_lockSyncRoot)
+			{
+				_lockConnection?.Dispose();
+				_lockConnection = null;
+				_lockedResources.Clear();
+			}
+
 			if (OwnsConnection)
 			{
 				_connection.Dispose();
@@ -81,11 +93,114 @@ namespace Hangfire.PostgreSql
 
 		public override IDisposable AcquireDistributedLock(string resource, TimeSpan timeout)
 		{
-			return new PostgreSqlDistributedLock(
-				$"HangFire:{resource}",
-				timeout,
-				_connection,
-				_options);
+			if (string.IsNullOrEmpty(resource)) throw new ArgumentNullException(nameof(resource));
+
+			return AcquireLock($"{_options.SchemaName}:HangFire:{resource}", timeout);
+		}
+
+		private IDisposable AcquireLock(string resource, TimeSpan timeout)
+		{
+			lock (_lockSyncRoot)
+			{
+				var lockId = Guid.NewGuid();
+
+				if (!_lockedResources.ContainsKey(resource))
+				{
+					_lockConnection = _lockConnection ?? CreateAndOpenLockConnection();
+
+					try
+					{
+						PostgreSqlDistributedLock.Acquire(_lockConnection, resource, timeout, _options);
+					}
+					catch
+					{
+						if (_lockedResources.Count == 0)
+						{
+							_lockConnection.Dispose();
+							_lockConnection = null;
+						}
+
+						throw;
+					}
+
+					_lockedResources.Add(resource, new HashSet<Guid>());
+				}
+
+				_lockedResources[resource].Add(lockId);
+				return new DisposableLock(this, resource, lockId);
+			}
+		}
+
+		private void ReleaseLock(string resource, Guid lockId, bool onDisposing)
+		{
+			lock (_lockSyncRoot)
+			{
+				try
+				{
+					if (!_lockedResources.TryGetValue(resource, out var resourceLocks))
+					{
+						return;
+					}
+
+					if (!resourceLocks.Contains(lockId))
+					{
+						return;
+					}
+
+					if (resourceLocks.Remove(lockId)
+						&& resourceLocks.Count == 0
+						&& _lockedResources.Remove(resource)
+						&& _lockConnection?.State == ConnectionState.Open)
+					{
+						PostgreSqlDistributedLock.Release(_lockConnection, resource, _options);
+					}
+				}
+				catch
+				{
+					if (!onDisposing)
+					{
+						throw;
+					}
+				}
+				finally
+				{
+					if (_lockedResources.Count == 0 && _lockConnection != null)
+					{
+						_lockConnection.Dispose();
+						_lockConnection = null;
+					}
+				}
+			}
+		}
+
+		private NpgsqlConnection CreateAndOpenLockConnection()
+		{
+			var connectionStringBuilder = new NpgsqlConnectionStringBuilder(_connection.ConnectionString)
+			{
+				Pooling = false
+			};
+			var lockConnection = _connection.CloneWith(connectionStringBuilder.ToString());
+			lockConnection.Open();
+			return lockConnection;
+		}
+
+		private sealed class DisposableLock : IDisposable
+		{
+			private readonly PostgreSqlConnection _connection;
+			private readonly Guid _lockId;
+			private readonly string _resource;
+
+			public DisposableLock(PostgreSqlConnection connection, string resource, Guid lockId)
+			{
+				_connection = connection;
+				_resource = resource;
+				_lockId = lockId;
+			}
+
+			public void Dispose()
+			{
+				_connection.ReleaseLock(_resource, _lockId, false);
+			}
 		}
 
 		public override IFetchedJob FetchNextJob(string[] queues, CancellationToken cancellationToken)
