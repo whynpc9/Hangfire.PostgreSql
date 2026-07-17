@@ -13,6 +13,10 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Hangfire.PostgreSql", "src\
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Hangfire.PostgreSql.Tests", "tests\Hangfire.PostgreSql.Tests\Hangfire.PostgreSql.Tests.csproj", "{6044A48D-730B-4D1F-B03A-EB2B458DAF53}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "samples", "samples", "{0FFF2366-B81A-463A-84C7-BF79F1E15433}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Hangfire.PostgreSql.AspNetCore31E2E", "samples\Hangfire.PostgreSql.AspNetCore31E2E\Hangfire.PostgreSql.AspNetCore31E2E.csproj", "{D566E513-2F47-4914-8F39-3E66A01D89A7}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -27,6 +31,10 @@ Global
 		{6044A48D-730B-4D1F-B03A-EB2B458DAF53}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{6044A48D-730B-4D1F-B03A-EB2B458DAF53}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{6044A48D-730B-4D1F-B03A-EB2B458DAF53}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D566E513-2F47-4914-8F39-3E66A01D89A7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D566E513-2F47-4914-8F39-3E66A01D89A7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D566E513-2F47-4914-8F39-3E66A01D89A7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D566E513-2F47-4914-8F39-3E66A01D89A7}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -34,6 +42,7 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{3E4DBC41-F38E-4D1C-A6A7-206A132A29D6} = {0D30A51B-814F-474E-93B8-44E9C155255C}
 		{6044A48D-730B-4D1F-B03A-EB2B458DAF53} = {766BE831-F758-46BC-AFD3-BBEEFE0F686F}
+		{D566E513-2F47-4914-8F39-3E66A01D89A7} = {0FFF2366-B81A-463A-84C7-BF79F1E15433}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {F7E32105-7F61-4127-8517-5E4275B9CABE}
